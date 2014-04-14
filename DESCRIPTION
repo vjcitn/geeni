@@ -1,0 +1,17 @@
+Package: geeni
+Title: gee in bounded memory, data from disk etc.
+Version: 0.0.8
+Author: VJ Carey <stvjc@channing.harvard.edu>
+Description: illustrate concepts of deployable statistical methodology
+	using GEE solution
+Suggests: parallel, doParallel, IRanges, biglm
+Depends: R (>= 2.15.0), methods, ff, foreach
+Maintainer: Vince Carey <stvjc@channing.harvard.edu>
+License: Artistic-2.0
+LazyLoad: yes
+Repository: R-Forge
+Repository/R-Forge/Project: yags
+Repository/R-Forge/Revision: 66
+Repository/R-Forge/DateTimeStamp: 2014-03-21 18:51:31
+Date/Publication: 2014-03-21 18:51:31
+Packaged: 2014-03-21 19:18:58 UTC; rforge
