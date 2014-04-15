@@ -1,0 +1,227 @@
+%\VignetteIndexEntry{Bounded memory GEE with geeni}
+%\VignetteDepends{ff, nlme, BiocParallel, IRanges}
+%\VignetteKeywords{GEE, bounded memory computations}
+%\VignettePackage{geeni}
+
+\documentclass{article}
+
+\usepackage[authoryear,round]{natbib}
+
+<<style, eval=TRUE, echo=FALSE, results=tex>>=
+BiocStyle::latex(use.unsrturl=FALSE)
+@
+
+\title{Bounded memory GEE with \Biocpkg{geeni}}
+\author{VJ Carey}
+\date{Edited: April 2014; Compiled: \today}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+
+<<options, echo=FALSE>>=
+options(width=72)
+options("showHeadLines" = 3)
+options("showTailLines" = 3)
+@
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Introduction}
+
+This is a very simple approach to illustrating three principles of 
+deployable statistical methodology. First, data areaccessed flexibly, 
+without the requirement that all records can be accessed simultaneously 
+in main memory. Second, computations are isolated where possible so that 
+they may be dispatched to parallel workers. Third, effort is made to 
+maximize reuse of existing numerical/statistical facilities in base \R{} 
+packages to program a GEE solver. This is not a fully general
+attempt at deployability.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Out of memory data}
+
+We want a representation of grouped data that can be operated
+on with small memory footprint.  We will store two data components
+that allow retrieval of individual groups from disk based on ff
+objects.
+
+First create a \Robject{groupedData} object from the orthodontistry dataset 
+in the \Rpackage{nlme} package.
+
+<<build_groupedData>>=
+library(geeni)
+library(nlme)
+  Orth.new <-
+       groupedData(distance ~ age | Subject,
+                   data = as.data.frame(Orthodont),
+                   FUN = mean,
+                   outer = ~ Sex,
+                   labels = list(x = "Age",
+                     y = "Distance from pituitary to pterygomaxillary fissure"),
+                   units = list( x = "(yr)", y = "(mm)"))
+dim(Orth.new)
+@
+
+The \Rfunction{gd2flat} function builds an \emph{out-of-memory} clustered 
+data set using the \Rfunction{ff} function in the \Rpackage{ff} package.
+
+<<build_ff>>=
+flatOrth <- gd2flat(gd=Orth.new, gcol=3, prefix="")
+flatOrth
+@
+
+The \Robject{flatOrth} object manages access to information on the 
+orthodontistry dataset from nlme. The key task supported by the 
+manager is retrieval of a specified cluster of observations
+using the getGrp method:
+
+<<lkg>>=
+getGrp(flatOrth, 1)
+getGrp(flatOrth, 4)
+@
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Isolate computations for parallel execution}
+
+The Newton-Raphson algorithm is one approch to solving the working 
+independence generalized equation which corresponds to the generalized
+linear model. The updating step of the Newton-Raphson is independent for 
+each data cluster and is a candidate for parallel computation. In this 
+section we isolate the parameter update step and demonstrate parallel
+execution with functions from the \Biocpkg{BiocParallel} package.
+
+Model \emph{link} and \emph{variance} components are specified by an 
+\R{} \Robject{family} object.  
+
+For $I$ observed clusters indexed by $i$, let $y_i$ denote an $n_i \times 1$
+response vector satisfying 
+\[
+E[y_i|x_i] = \mu_i(\beta) = g^{-1}( x_i \beta),
+\] 
+\[
+\mbox{var}(y_i) = V(\mu_i)
+\]
+where $x_i$ is $n_i \times p$ matrix of covariates, and
+$g(\cdot)$ and $V(\cdot)$ are link and variance functions from the family
+of GLMs.  We will eventually accommodate a working intracluster correlation
+model, but for now adopt working independence.
+
+We want to solve
+\[
+\sum_i \frac{\partial \mu_i(\beta)}{\partial \beta}^t V^{-1}(\mu_i)[y_i - \mu_i(\beta)] = 
+\sum_i D_i^t V_i^{-1}r_i = 0
+\]
+for $\beta$ by iterating 
+\[
+\hat{\beta}^{(s)} = \hat{\beta}^{(s-1)} + (\sum_i D_i^t V^{-1}_i D_i)^{-1}(\sum_i D_i^t V^{-1}_i r_i)
+\]
+over $s = 1, \ldots$ until convergence.
+
+The following helpers are used in solving the system of equations:
+
+<<glminf>>=
+getDep
+getEta
+getMu
+getX 
+getY
+Di
+Vinv.i
+ri
+@
+
+Define a function to perform a single update step for \emph{beta}:
+
+<<doco>>=
+delb <- function(gd, beta, family) {
+    DD <- Di(gd, 1, beta, family)
+    val <- t(DD) %*% Vinv.i(gd, 1, beta, family) 
+    val1 <- val %*% DD
+    val2 <- val %*% ri(gd, 1, beta, family)
+    for  (i in 2:length(gd@discrim)) {
+        DD <- Di(gd, i, beta, family)
+        val <- t(DD) %*% Vinv.i(gd, i, beta, family) 
+        val1 <- val1 + val %*% DD
+        val2 <- val2 + val %*% ri(gd, i, beta, family)
+    }
+    solve(val1) %*% val2
+}
+@
+
+Compute one update step from an initial value of zero:
+
+<<update_step>>=
+delb(flatOrth, beta = c(0, 0, 0), family = gaussian)
+@
+
+We compare our output with the example from the \Rfunction{groupedData}
+man page from the \Rpackage{nlme} package. For the Gaussian model the 
+constituents seem to be correct. 
+
+<<lkg,eval=TRUE,echo=FALSE,results=hide>>=
+example(groupedData)
+@
+
+Any discrepancy in the intercept is attributable to different factor 
+coding for Sex.
+
+<<lklm>>=
+lm(distance ~ age + Sex, data = Orth.new)
+@
+
+We now factor the problem so quantities for each cluster are computed 
+separately. \Rfunction{bplapply} from \Rpackage{BiocParallel} distributes 
+quantities for each data cluster to workers. Results are combined 
+across workers with the \Rfunction{combi} function and the beta 
+parameter is updated.
+
+<<howto>>=
+beta <- c(0, 0, 0)
+clusters <- seq_along(flatOrth@discrim)
+
+comps <- combi(bplapply(clusters, Gcomps, flatOrth, beta, gaussian)) 
+comps
+beta <- beta + (solve(comps[[1]]) %*% comps[[2]])
+comps <- combi(bplapply(clusters, Gcomps, flatOrth, beta, gaussian)) 
+comps
+@
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\section{Generic solver}
+
+
+These steps have been put together as a generic solver in the 
+\Rfunction{pargee} function.
+
+<<dog>>=
+pargee(flatOrth, gaussian, c(0,0,0))
+@
+
+If necessary, adjust the coding discrepancy for the Sex factor:
+
+<<domore,eval=FALSE,keep.source=TRUE>>=
+flatOrth@numdat[,"Sex"] = flatOrth@numdat[,"Sex"]-1  # overwrite allowed
+@
+
+Remove the ff data:
+
+<<killff>>=
+system("rm -rf .dat.ff")
+system("rm -rf .disc.ff")
+@
+ 
+<<lkses>>=
+sessionInfo()
+@
+
+\end{document}

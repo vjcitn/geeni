@@ -1,3 +1,15 @@
-exportClasses("gdManager")
-exportMethods("getGrp")
-export(pargee)  # eventually should be a method
+import(methods)
+import(ff)
+import(IRanges)
+import(BiocParallel)
+
+exportClasses(gdManager)
+
+exportMethods(getGrp)
+
+export(pargee)
+
+export(
+    getGrp, gd2flat, getDep, getEta, getMu, getX, getY, Di,
+    Vinv.i, ri, Gcomps, combi
+)

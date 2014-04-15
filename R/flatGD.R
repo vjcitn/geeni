@@ -1,5 +1,3 @@
-library(ff)
-
 setOldClass("ff_vector")
 setOldClass("ff_matrix")
 setOldClass("formula")
