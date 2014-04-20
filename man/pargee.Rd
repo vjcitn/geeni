@@ -8,7 +8,7 @@ demonstrate a parallelized, out-of-memory based GEE solver
 demonstrate a parallelized, out-of-memory based GEE solver
 }
 \usage{
-pargee(gd, family, binit, maxit = 20, tol = 1e-06)
+pargee(gd, family, binit, maxit = 20, tol = 1e-06, ...)
 }
 %- maybe also 'usage' for other objects documented here.
 \arguments{
@@ -27,6 +27,9 @@ maximum number of iterations allowed
   \item{tol}{
 convergence criterion -- will stop when largest maximum absolute size
 of any component of the iteration step is smaller than \code{tol}
+}
+  \item{\dots}{
+arguments passed to other methods
 }
 }
 \details{
