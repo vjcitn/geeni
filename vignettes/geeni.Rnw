@@ -33,26 +33,25 @@ options("showTailLines" = 3)
 \section{Introduction}
 
 This is a very simple approach to illustrating three principles of 
-deployable statistical methodology. First, data areaccessed flexibly, 
+deployable statistical methodology. First, data are accessed flexibly, 
 without the requirement that all records can be accessed simultaneously 
 in main memory. Second, computations are isolated where possible so that 
 they may be dispatched to parallel workers. Third, effort is made to 
-maximize reuse of existing numerical/statistical facilities in base \R{} 
-packages to program a GEE solver. This is not a fully general
-attempt at deployability.
+maximize reuse of existing numerical / statistical facilities in base \R{} 
+packages to program a generalized estimating equation (GEE) solver. 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \section{Out of memory data}
 
-We want a representation of grouped data that can be operated
-on with small memory footprint.  We will store two data components
-that allow retrieval of individual groups from disk based on ff
+We want a representation of grouped data that can be manipulated with
+a small memory footprint.  We store two data components on disk
+that allow retrieval of individual groups based on \Robject{ff}
 objects.
 
-First create a \Robject{groupedData} object from the orthodontistry dataset 
-in the \Rpackage{nlme} package.
+We use the orthodontistry dataset from the \Rpackage{nlme} to create
+a \Robject{groupedData} object.
 
 <<build_groupedData>>=
 library(geeni)
@@ -76,10 +75,10 @@ flatOrth <- gd2flat(gd=Orth.new, gcol=3, prefix="")
 flatOrth
 @
 
-The \Robject{flatOrth} object manages access to information on the 
-orthodontistry dataset from nlme. The key task supported by the 
-manager is retrieval of a specified cluster of observations
-using the getGrp method:
+\Robject{flatOrth} is a \Robject{gdManager} object which manages access 
+to the information in the files we created on disk. The key task 
+supported by the manager is retrieval of a specified cluster of observations
+using the \Rfunction{getGrp} method:
 
 <<lkg>>=
 getGrp(flatOrth, 1)
@@ -89,17 +88,33 @@ getGrp(flatOrth, 4)
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-\section{Isolate computations for parallel execution}
+\section{Independent computations}
 
-The Newton-Raphson algorithm is one approch to solving the working 
-independence generalized equation which corresponds to the generalized
-linear model. The updating step of the Newton-Raphson is independent for 
-each data cluster and is a candidate for parallel computation. In this 
-section we isolate the parameter update step and demonstrate parallel
-execution with functions from the \Biocpkg{BiocParallel} package.
+In this section we identify the portions of our problem that can be
+isolated and run in parallel.
+
+Generalized estimating equations are an extension to generalized
+linear models (GLMs) to accomodate the modeling of correlated data.
+The general steps are as follows.
+
+\begin{itemize}
+  \item Compute initial parameter estimates with GLM
+        (assumes observations within subjects are independent)
+  \item Calculate residuals from naive model (observed - predicted)
+  \item Calculate working correlation matrix from residuals
+  \item Re-fit regression coefficients using corrected correlation
+        (iterative process)
+\end{itemize}
+
+The Newton-Raphson algorithm is one approach to solving the system of
+estimating equations. The parameter update step of the Newton-Raphson is 
+independent for each data cluster and therefore a good candidate for 
+parallel computation. In this section we write a function to isolate 
+the parameter update step and demonstrate parallel execution with 
+functions from the \Biocpkg{BiocParallel} package.
 
 Model \emph{link} and \emph{variance} components are specified by an 
-\R{} \Robject{family} object.  
+\R{} \Robject{family} object. 
 
 For $I$ observed clusters indexed by $i$, let $y_i$ denote an $n_i \times 1$
 response vector satisfying 
@@ -111,8 +126,8 @@ E[y_i|x_i] = \mu_i(\beta) = g^{-1}( x_i \beta),
 \]
 where $x_i$ is $n_i \times p$ matrix of covariates, and
 $g(\cdot)$ and $V(\cdot)$ are link and variance functions from the family
-of GLMs.  We will eventually accommodate a working intracluster correlation
-model, but for now adopt working independence.
+of GLMs and $D$ is a matrix of derivatives. We will eventually accommodate a 
+working intracluster correlation model, but for now adopt working independence.
 
 We want to solve
 \[
@@ -125,20 +140,15 @@ for $\beta$ by iterating
 \]
 over $s = 1, \ldots$ until convergence.
 
-The following helpers are used in solving the system of equations:
+In each iteration, the standard error will be computed as
 
-<<glminf>>=
-getDep
-getEta
-getMu
-getX 
-getY
-Di
-Vinv.i
-ri
-@
+\[
+(D_i^{t} V_i^{-1} D_i)^{-1}(D_i^{t} V^{-1} E_i V_i^{-1} D_i)(D_i^{t} V_i^{-1} D_i)^{-1}
+\]
 
-Define a function to perform a single update step for \emph{beta}:
+where $E$ is a diagonal matrix of $r_i$ values.
+
+The \Rfunction{delb} function performs a single update step for \emph{beta}:
 
 <<doco>>=
 delb <- function(gd, beta, family) {
@@ -162,8 +172,8 @@ Compute one update step from an initial value of zero:
 delb(flatOrth, beta = c(0, 0, 0), family = gaussian)
 @
 
-We compare our output with the example from the \Rfunction{groupedData}
-man page from the \Rpackage{nlme} package. For the Gaussian model the 
+We compare our output with the \Rfunction{groupedData} man page
+example from the \Rpackage{nlme} package. For the Gaussian model the 
 constituents seem to be correct. 
 
 <<lkg,eval=TRUE,echo=FALSE,results=hide>>=
@@ -183,12 +193,21 @@ quantities for each data cluster to workers. Results are combined
 across workers with the \Rfunction{combi} function and the beta 
 parameter is updated.
 
-<<howto>>=
+Set the initial beta vector to zero. The three values represent
+the intercept, age and sex.
+<<multiple_iteration_1>>=
 beta <- c(0, 0, 0)
-clusters <- seq_along(flatOrth@discrim)
+clusters <- seq_along(discrim(flatOrth))
+@
 
+The first call to \Rfunction{Gcomps} produces the first estimates.
+<<multiple_iteration_2>>=
 comps <- combi(bplapply(clusters, Gcomps, flatOrth, beta, gaussian)) 
 comps
+@
+
+Beta is updated and \Rfunction{Gcomps} is called again.
+<<multiple_iteration_3>>=
 beta <- beta + (solve(comps[[1]]) %*% comps[[2]])
 comps <- combi(bplapply(clusters, Gcomps, flatOrth, beta, gaussian)) 
 comps
@@ -200,11 +219,11 @@ comps
 \section{Generic solver}
 
 
-These steps have been put together as a generic solver in the 
-\Rfunction{pargee} function.
+Putting these steps together we create a generic solver in the 
+single function \Rfunction{pargee}.
 
 <<dog>>=
-pargee(flatOrth, gaussian, c(0,0,0))
+pargee(flatOrth, gaussian, c(0, 0, 0))
 @
 
 If necessary, adjust the coding discrepancy for the Sex factor:
