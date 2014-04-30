@@ -1,5 +1,5 @@
 %\VignetteIndexEntry{Bounded memory GEE with geeni}
-%\VignetteDepends{ff, nlme, BiocParallel, IRanges}
+%\VignetteDepends{ff, nlme, BiocParallel, IRanges, gee, geepack}
 %\VignetteKeywords{GEE, bounded memory computations}
 %\VignettePackage{geeni}
 
@@ -46,17 +46,17 @@ packages to program a generalized estimating equation (GEE) solver.
 \section{Out of memory data}
 
 We want a representation of grouped data that can be manipulated with
-a small memory footprint.  We store two data components on disk
-that allow retrieval of individual groups based on \Robject{ff}
-objects.
+a small memory footprint. On-disk storage will be investigated with
+the \Rpackage{ff}, \Rpackage{bigmemory} and \Rpackage{rhdf5} packages.
 
-We use the orthodontistry dataset from the \Rpackage{nlme} to create
-a \Robject{groupedData} object.
+The orthodontistry dataset from the \Rpackage{nlme} package will serve 
+as sample data. First we create a \Robject{groupedData} object in \R{}
+which is designed to hold grouped, ordered data.
 
 <<build_groupedData>>=
 library(geeni)
 library(nlme)
-  Orth.new <-
+  orthGD <-
        groupedData(distance ~ age | Subject,
                    data = as.data.frame(Orthodont),
                    FUN = mean,
@@ -64,35 +64,51 @@ library(nlme)
                    labels = list(x = "Age",
                      y = "Distance from pituitary to pterygomaxillary fissure"),
                    units = list( x = "(yr)", y = "(mm)"))
-dim(Orth.new)
+dim(orthGD)
 @
 
-The \Rfunction{gd2flat} function builds an \emph{out-of-memory} clustered 
-data set using the \Rfunction{ff} function in the \Rpackage{ff} package.
+\subsection{bigmemory}
+TBD
 
+\subsection{rhdf5}
+TBD
+
+\subsection{ff}
+
+The function \Rfunction{groupedData2ff} builds an \emph{out-of-memory} 
+clustered data set by wrapping the \Rcode{ff} function. Two files are written 
+to disk, one contains the raw data and the other metadata. For this example 
+the files are written to a temp directory that is deleted at the close 
+of the \R{} session. In practice, the files can be written to disk for 
+reuse in later anlayses.
+
+Convert the \Robject{groupedData} object to \emph{ff} files:
 <<build_ff>>=
-flatOrth <- gd2flat(gd=Orth.new, gcol=3, prefix="")
-flatOrth
+orthMgr <- groupedData2ff(gd=orthGD, gcol=3, prefix=tempfile())
 @
 
-\Robject{flatOrth} is a \Robject{gdManager} object which manages access 
-to the information in the files we created on disk. The key task 
-supported by the manager is retrieval of a specified cluster of observations
-using the \Rfunction{getGrp} method:
+\Robject{orthMgr} is a \Robject{gdManager} object which manages access 
+to the information in the files on disk. 
+<<gdManager>>=
+orthMgr
+@
 
-<<lkg>>=
-getGrp(flatOrth, 1)
-getGrp(flatOrth, 4)
+The key task supported by the manager is retrieval of a specified cluster 
+of observations using the \Rfunction{getGroup} method:
+<<getGroup>>=
+getGroup(orthMgr, 1)
+getGroup(orthMgr, 4)
 @
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-\section{Independent computations}
+\section{Independent computations for parallel evaluation}
 
-In this section we identify the portions of our problem that can be
+In this section we identify portions of the problem that can be
 isolated and run in parallel.
 
+\subsection{problem statement}
 Generalized estimating equations are an extension to generalized
 linear models (GLMs) to accomodate the modeling of correlated data.
 The general steps are as follows.
@@ -106,15 +122,10 @@ The general steps are as follows.
         (iterative process)
 \end{itemize}
 
-The Newton-Raphson algorithm is one approach to solving the system of
+The Newton-Raphson algorithm is one approach to solving the system of 
 estimating equations. The parameter update step of the Newton-Raphson is 
 independent for each data cluster and therefore a good candidate for 
-parallel computation. In this section we write a function to isolate 
-the parameter update step and demonstrate parallel execution with 
-functions from the \Biocpkg{BiocParallel} package.
-
-Model \emph{link} and \emph{variance} components are specified by an 
-\R{} \Robject{family} object. 
+parallel evaluation. 
 
 For $I$ observed clusters indexed by $i$, let $y_i$ denote an $n_i \times 1$
 response vector satisfying 
@@ -124,10 +135,10 @@ E[y_i|x_i] = \mu_i(\beta) = g^{-1}( x_i \beta),
 \[
 \mbox{var}(y_i) = V(\mu_i)
 \]
-where $x_i$ is $n_i \times p$ matrix of covariates, and
-$g(\cdot)$ and $V(\cdot)$ are link and variance functions from the family
-of GLMs and $D$ is a matrix of derivatives. We will eventually accommodate a 
-working intracluster correlation model, but for now adopt working independence.
+where $x_i$ is $n_i \times p$ matrix of covariates, and $g(\cdot)$ and 
+$V(\cdot)$ are link and variance functions from the family of GLMs. We 
+will eventually accommodate a working intracluster correlation model, but 
+for now adopt working independence.
 
 We want to solve
 \[
@@ -140,76 +151,118 @@ for $\beta$ by iterating
 \]
 over $s = 1, \ldots$ until convergence.
 
-In each iteration, the standard error will be computed as
+The robust variance is computed as follows:
 
 \[
-(D_i^{t} V_i^{-1} D_i)^{-1}(D_i^{t} V^{-1} E_i V_i^{-1} D_i)(D_i^{t} V_i^{-1} D_i)^{-1}
+(\sum_i D_i^{t} V_i^{-1} D_i)^{-1}(\sum_i D_i^{t} V^{-1} r_i r_i^t V^{-1} D_i)(\sum_i D_i^{t}
+V_i^{-1} D_i)^{-1}
 \]
 
-where $E$ is a diagonal matrix of $r_i$ values.
+\subsection{prototype}
 
-The \Rfunction{delb} function performs a single update step for \emph{beta}:
-
-<<doco>>=
-delb <- function(gd, beta, family) {
+The \Rfunction{updateBeta} function performs a single parameter update 
+step. Values from the first data cluster are used as initial values.
+Estimates from the remaining 26 clusters are added sequentially in the
+\emph{for} loop.
+<<updateBeta>>=
+updateBeta <- function(gd, beta, family, sandwich=TRUE) {
+    ## values from first data cluster
     DD <- Di(gd, 1, beta, family)
-    val <- t(DD) %*% Vinv.i(gd, 1, beta, family) 
+    tDD <- t(DD) 
+    r_i <- ri(gd, 1, beta, family)
+    Vinv <- Vinv.i(gd, 1, beta, family)
+    val <- tDD %*% Vinv 
     val1 <- val %*% DD
-    val2 <- val %*% ri(gd, 1, beta, family)
-    for  (i in 2:length(gd@discrim)) {
-        DD <- Di(gd, i, beta, family)
-        val <- t(DD) %*% Vinv.i(gd, i, beta, family) 
-        val1 <- val1 + val %*% DD
-        val2 <- val2 + val %*% ri(gd, i, beta, family)
+    val2 <- val %*% r_i
+    middle <- NA 
+    if (sandwich) {
+        m1 <- (tDD %*% Vinv) %*% r_i
+        m2 <- r_i %*% (Vinv %*% DD) 
+        middle <- m1 %*% m2
     }
-    solve(val1) %*% val2
+    ## sequential parameter updates
+    for  (i in 2:length(discrim(gd))) {
+        DD <- Di(gd, i, beta, family)
+        tDD <- t(DD) 
+        r_i <- ri(gd, i, beta, family)
+        val <- tDD %*% Vinv.i(gd, i, beta, family) 
+        val1 <- val1 + val %*% DD
+        val2 <- val2 + val %*% r_i
+        if (sandwich) {
+            m1 <- (tDD %*% Vinv) %*% r_i
+            m2 <- r_i %*% (Vinv %*% DD) 
+            middle <- m1 %*% m2
+        }
+    }
+    beta <- solve(val1) %*% val2
+    robvar <- solve(val1) %*% (middle %*% solve(val1))
+    list(coefficients=beta, robust.variance=robvar)
 }
 @
 
-Compute one update step from an initial value of zero:
-
+A single update step is computed using initial values of zero for
+\emph{intercept}, \emph{age} and \emph{Sex}.
 <<update_step>>=
-delb(flatOrth, beta = c(0, 0, 0), family = gaussian)
+res <- updateBeta(orthMgr, beta = c(0, 0, 0), family = gaussian)
+round(res$coefficients, 4)
 @
 
-We compare our output with the \Rfunction{groupedData} man page
-example from the \Rpackage{nlme} package. For the Gaussian model the 
-constituents seem to be correct. 
-
-<<lkg,eval=TRUE,echo=FALSE,results=hide>>=
-example(groupedData)
+For the Gaussian model the GEE coeffecient estimates are consistent 
+with those from the linear model. 
+<<linear_lm>>=
+lm(distance ~ age + Sex, data = orthGD)
 @
 
-Any discrepancy in the intercept is attributable to different factor 
-coding for Sex.
-
-<<lklm>>=
-lm(distance ~ age + Sex, data = Orth.new)
+Discrepancy in the intercept is attributable to different factor 
+coding for Sex. In the orthGD object Sex is a factor:
+<<sex_factor>>=
+table(orthGD$Sex)
 @
+
+In the ff file male was encoded as `1` and female as `2`:
+<<sex_numeric>>=
+table(numdat(orthMgr)[,"Sex"])
+@
+
+If necessary, the coding in the ff file can be adjusted to
+0 and 1:
+<<sex_overwrite_ff, eval=FALSE, keep.source=TRUE>>=
+numdat(orthMgr)[,"Sex"] <- numdat(orthMgr)[,"Sex"] - 1
+@
+
+\subsection{parallel evaluation}
 
 We now factor the problem so quantities for each cluster are computed 
-separately. \Rfunction{bplapply} from \Rpackage{BiocParallel} distributes 
-quantities for each data cluster to workers. Results are combined 
-across workers with the \Rfunction{combi} function and the beta 
-parameter is updated.
+separately. The code in the \emph{for} loop in \Rfunction{updateBeta}
+has been captured in the \Rfunction{Gcomps} function and will be 
+distributed in parallel and executed for each data cluster. Results are 
+then combined across workers and parameter estimates are updated. 
 
-Set the initial beta vector to zero. The three values represent
-the intercept, age and sex.
-<<multiple_iteration_1>>=
+The initial beta vector is set to zero for \emph{intercept}, \emph{age}
+and \emph{Sex}.
+<<set_beta>>=
 beta <- c(0, 0, 0)
-clusters <- seq_along(discrim(flatOrth))
 @
 
-The first call to \Rfunction{Gcomps} produces the first estimates.
-<<multiple_iteration_2>>=
-comps <- combi(bplapply(clusters, Gcomps, flatOrth, beta, gaussian)) 
+\Rfunction{bplapply} from \Rpackage{BiocParallel} distributes the
+\Rfunction{Gcomps} function and quantities for each data cluster to 
+the workers. 
+<<Gcomps>>=
+clusters <- seq_along(discrim(orthMgr))
+all_workers <- bplapply(clusters, Gcomps, orthMgr, beta, gaussian) 
+@
+
+Results are combined across workers with the \Rfunction{combi} function.
+<<combine>>=
+comps <- combi(all_workers) 
 comps
 @
 
-Beta is updated and \Rfunction{Gcomps} is called again.
-<<multiple_iteration_3>>=
+Beta is updated and the process is repeated:
+<<update_beta>>=
 beta <- beta + (solve(comps[[1]]) %*% comps[[2]])
-comps <- combi(bplapply(clusters, Gcomps, flatOrth, beta, gaussian)) 
+all_workers <- bplapply(clusters, Gcomps, orthMgr, beta, gaussian)
+comps <- combi(all_workers) 
 comps
 @
 
@@ -218,28 +271,33 @@ comps
 
 \section{Generic solver}
 
+These steps have been put together in a generic solver called 
+\Rfunction{pargee}.
 
-Putting these steps together we create a generic solver in the 
-single function \Rfunction{pargee}.
-
-<<dog>>=
-pargee(flatOrth, gaussian, c(0, 0, 0))
+<<pargee>>=
+res <- pargee(orthMgr, gaussian, c(0, 0, 0))
 @
 
-If necessary, adjust the coding discrepancy for the Sex factor:
-
-<<domore,eval=FALSE,keep.source=TRUE>>=
-flatOrth@numdat[,"Sex"] = flatOrth@numdat[,"Sex"]-1  # overwrite allowed
+Parameter estimates and robust standard errors correlate well with
+those produced by other GEE packages.
+<<pargee_sandwich>>=
+round(res$coefficients, 4)
+sqrt(diag(res$robust.variance))
 @
 
-Remove the ff data:
-
-<<killff>>=
-system("rm -rf .dat.ff")
-system("rm -rf .disc.ff")
+The \Rcode{gee} function in the \Rpackage{gee} package:
+<<gee_gee>>=
+library(gee)
+summary(gee(distance ~ age + Sex, data=orthGD, id=Subject))$coefficients
 @
- 
-<<lkses>>=
+
+The \Rcode{glmgee} function in the \Rpackage{geepack} package:
+<<geepack_glmgee>>=
+library(geepack)
+summary(geeglm(distance ~ age + Sex, data=orthGD, id=Subject))$coefficients
+@
+
+<<sessionInfo>>=
 sessionInfo()
 @
 

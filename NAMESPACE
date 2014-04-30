@@ -5,12 +5,12 @@ import(BiocParallel)
 
 exportClasses(gdManager)
 
-exportMethods(getGrp, formula)
+exportMethods(getGroup, formula)
 
 export(pargee)
 
 export(
-    getGrp, gd2flat, getDep, getEta, getMu, getX, getY, Di,
+    getGroup, groupedData2ff, getDep, getEta, getMu, getX, getY, Di,
     Vinv.i, ri, Gcomps, combi,
-    discrim, numdat 
+    discrim, 'discrim<-', numdat, 'numdat<-' 
 )
