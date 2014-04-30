@@ -1,8 +1,25 @@
 \name{gdManager-class}
-\Rdversion{1.1}
 \docType{class}
+
+% Class
+\alias{class:gdManager}
 \alias{gdManager-class}
+
+% Constructors
 \alias{getGrp,gdManager,numeric-method}
+\alias{getGrp,ANY,numeric-method}
+
+% Accessors
+\alias{numdat}
+\alias{numdat<-}
+\alias{discrim}
+\alias{discrim<-}
+\alias{formula,gdManager-method}
+\alias{formula<-,gdManager,formula-method}
+
+% Methods
+\alias{getGroup,gdManager,numeric-method}
+\alias{getGroup,ANY,numeric-method}
 
 \title{Class "gdManager"}
 \description{
