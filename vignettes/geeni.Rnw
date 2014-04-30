@@ -226,7 +226,7 @@ table(numdat(orthMgr)[,"Sex"])
 
 If necessary, the coding in the ff file can be adjusted to
 0 and 1:
-<<sex_overwrite_ff, eval=FALSE, keep.source=TRUE>>=
+<<sex_overwrite_ff, keep.source=TRUE>>=
 numdat(orthMgr)[,"Sex"] <- numdat(orthMgr)[,"Sex"] - 1
 @
 
