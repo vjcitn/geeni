@@ -111,7 +111,10 @@ isolated and run in parallel.
 \subsection{problem statement}
 Generalized estimating equations are an extension to generalized
 linear models (GLMs) to accomodate the modeling of correlated data.
-The general steps are as follows.
+Unlike the random-effect model, which is subject specific, GEE is
+a population averaged approach in which the marginal effects of the
+model are averaged across individuals. The general steps of the
+GEE algorithm are as follows.
 
 \begin{itemize}
   \item Compute initial parameter estimates with GLM
@@ -122,8 +125,9 @@ The general steps are as follows.
         (iterative process)
 \end{itemize}
 
-The Newton-Raphson algorithm is one approach to solving the system of 
-estimating equations. The parameter update step of the Newton-Raphson is 
+The Newton-Raphson or Fisher scoring algorithms can be used to solve 
+the system of estimating equations. The parameter update step of 
+the Newton-Raphson is 
 independent for each data cluster and therefore a good candidate for 
 parallel evaluation. 
 
